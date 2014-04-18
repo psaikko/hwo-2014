@@ -39,7 +39,7 @@ class NoobBot(object):
         self.ping()
 
     def on_car_positions(self, data):
-        self.throttle(0.5)
+        self.throttle(0.51)
 
     def on_crash(self, data):
         print("Someone crashed")
