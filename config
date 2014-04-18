@@ -1,3 +1,3 @@
-export PL="{{lang}}"
-export BOTKEY="{{botkey}}"
-export BOTNAME="{{botname}}"
+export PL="python"
+export BOTKEY="ko4dCgf+VbgWWg"
+export BOTNAME="foo"
