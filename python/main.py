@@ -27,17 +27,18 @@ class Piece:
             self.turn = True
             self.radius = json['radius']
             self.angle = json['angle']
-            self.length = (math.pi * self.angle / 180.0) * self.radius
+            self.length = abs((math.pi * self.angle / 180.0) * self.radius)
         else:
             self.turn = False
             self.length = json['length']
         self.switch = 'switch' in json
 
     def __repr__(self):
+        s = " with switch" if self.switch else ""
         if self.turn:
-            return "Turn of angle %f, radius %f, with length %d" % (self.angle, self.radius, self.length)
+            return "Turn of angle %.3f, radius %.3f, with length %.3f%s" % (self.angle, self.radius, self.length, s)
         else:
-            return "Straight of length %d%s" % (self.length, " with switch" if self.switch else "")
+            return "Straight of length %d%s" % (self.length, s)
 
 class Track:
     def __init__(self, json):
@@ -49,14 +50,29 @@ class Track:
     def __repr__(self):
         s = self.name+'\n'
         s += '\n'.join([p.__repr__() for p in self.pieces]) + '\n'
-        s += '\n'.join([l.__repr__() for l in self.lanes]) + '\n'
+        s += '\n'.join([l.__repr__() for l in self.lanes])
         return s
+
+class Position:
+    def __init__(self, track, json):
+        self.angle = json['angle']
+        piece_pos = json['piecePosition']
+        self.piece_idx = piece_pos['pieceIndex']
+        self.piece = track.pieces[self.piece_idx]
+        self.piece_dist = piece_pos['inPieceDistance']
+        self.start_lane_idx = piece_pos['lane']['startLaneIndex']
+        self.end_lane_idx = piece_pos['lane']['endLaneIndex']
+
+    def __repr__(self):
+        return "%d/%d on piece %d, at angle %.3f" % (self.piece_dist, self.piece.length, self.piece_idx, self.angle)
 
 class ProBot(object):
     def __init__(self, socket, name, key):
         self.socket = socket
         self.name = name
         self.key = key
+        self.ticks = 0
+        self.next_switch_piece = None
 
     def msg(self, msg_type, data):
         self.send(json.dumps({"msgType": msg_type, "data": data}))
@@ -71,7 +87,11 @@ class ProBot(object):
     def throttle(self, throttle):
         self.msg("throttle", throttle)
 
+    def switch(self, direction):
+        self.msg("switchLane", direction)
+
     def ping(self):
+        print('.. ping ..')
         self.msg("ping", {})
 
     def run(self):
@@ -100,10 +120,64 @@ class ProBot(object):
         self.ping()
 
     def on_car_positions(self, data):
-        self.throttle(0.6)
+        cars = dict()
+        for json in data:
+            cars[json['id']['color']] = Position(self.track, json)
+        own_position = cars[self.color]
+
+        self.ticks += 1
+        if self.ticks % 10 == 0:
+            print(own_position)
+
+        # logic for switching to the shortest lane
+        if self.next_switch_piece in [None, own_position.piece] and own_position.piece_dist > (own_position.piece.length / 2):
+
+            i = own_position.piece_idx
+            n = len(self.track.pieces)
+            
+            switch_idx = None
+            for j in range(1,n):
+                p = self.track.pieces[(i+j)%n]
+                if p.switch:
+                    self.next_switch_piece = p
+                    switch_idx = (i+j)%n
+                    break
+            print("Next switch: %d" % (switch_idx,))
+            right_turns = 0
+            left_turns = 0
+            for j in range(1,n):
+                p = self.track.pieces[(switch_idx+j)%n]
+                if p.switch:
+                    break
+                if p.turn:
+                    if p.angle > 0:
+                        print("Right at %d" % ((switch_idx+j)%n,))
+                        right_turns += 1
+                    else: 
+                        print("Left at %d" % ((switch_idx+j)%n,))
+                        left_turns += 1
+            if right_turns > left_turns:
+                print("switch right")
+                self.switch("Right")
+                return
+            if left_turns > right_turns:
+                print("switch left")
+                self.switch("Left")
+                return
+        self.throttle(0.65)
 
     def on_crash(self, data):
-        print("Someone crashed")
+        if data['color'] == self.color:
+            print("I crashed")
+        else:
+            print("Someone crashed")
+        self.ping()
+
+    def on_spawn(self, data):
+        if data['color'] == self.color:
+            print("I spawned")
+        else:
+            print("Someone spawned")
         self.ping()
 
     def on_game_end(self, data):
@@ -122,6 +196,7 @@ class ProBot(object):
             'gameInit': self.on_game_init,
             'carPositions': self.on_car_positions,
             'crash': self.on_crash,
+            'spawn': self.on_spawn,
             'gameEnd': self.on_game_end,
             'error': self.on_error,
         }
