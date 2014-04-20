@@ -92,9 +92,21 @@ class ProBot(object):
     def send(self, msg):
         self.socket.sendall(msg + "\n")
 
-    def join(self):
-        return self.msg("join", {"name": self.name,
-                                 "key": self.key})
+    def run(self, track=""):
+        self.join(track)
+        self.msg_loop()
+
+    def join(self, track):
+        if track == "": 
+            return self.msg("join", {"name": self.name,
+                                     "key": self.key})
+        else:
+            data = {"botId": {"name": self.name,
+                              "key": self.key},
+                    "trackName": track,
+                    "carCount": 1}
+            print(data)
+            return self.msg("joinRace", data)
 
     def throttle(self, throttle):
         self.msg("throttle", throttle)
@@ -105,10 +117,6 @@ class ProBot(object):
     def ping(self):
         print('.. ping ..')
         self.msg("ping", {})
-
-    def run(self):
-        self.join()
-        self.msg_loop()
 
     def on_join(self, data):
         print("Joined")
@@ -278,7 +286,15 @@ class ProBot(object):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 5:
+    if len(sys.argv) == 6:
+        host, port, name, key, track = sys.argv[1:6]
+        print("Connecting with parameters:")
+        print("host={0}, port={1}, bot name={2}, key={3}, track={4}".format(*sys.argv[1:6]))
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.connect((host, int(port)))
+        bot = ProBot(s, name, key)
+        bot.run(track)
+    elif len(sys.argv) != 5:
         print("Usage: ./run host port botname botkey")
     else:
         host, port, name, key = sys.argv[1:5]
