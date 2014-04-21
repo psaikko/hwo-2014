@@ -4,6 +4,10 @@ import sys
 import math
 from time import clock
 
+# TODO: learn traction
+# TODO: lane change logic for corner entry speed
+# TODO: calculate straightening rate after corners
+
 MAX_DRIFT_ANGLE = 60
 DECELERATION_RATE = 0.02
 TRACTION_EST = 0.321
@@ -100,6 +104,8 @@ class FooBot(object):
         self.key = key
         self.ticks = 0
         self.next_switch_piece = None
+        self.next_switch_idx = -1
+        self.next_lane = -1
         self.positions = []
         self.vs = [0]
         self.ts = [0]
@@ -235,7 +241,7 @@ class FooBot(object):
         self.ticks += 1
 
         turn_radius = self.corner_radius(own_pos.piece, own_pos.end_lane_idx)
-        if self.ticks % 10 == 0 or True:
+        if self.ticks % 10 == 5:
             print(own_pos)
             drift_log = "v = %.2f, a = %.2f, dt = %.2f, ddt = %.2f, r = %d" % (v, t, dt, ddt, turn_radius)
             print(drift_log)
@@ -249,10 +255,10 @@ class FooBot(object):
         #print("v-t %.2f,%.2f" % (v, t))
         #print("v-dt %.2f,%.2f" % (v, dt))
         #print("v-ddt %.2f,%.2f" % (v, ddt))
-
-        #self.throttle(0.4 + own_pos.piece_idx / 39 * 0.35)
-        #self.throttle(0.65)
         #return
+
+        if not own_pos.piece.turn and (dt != 0 or ddt != 0):
+            print("# %.2f %.2f" % (dt, ddt))
 
         # logic for switching to the shortest lane
         if self.next_switch_piece in [None, own_pos.piece] and own_pos.piece_dist > (own_pos.piece.length() / 2):
@@ -265,6 +271,7 @@ class FooBot(object):
                 p = self.track.pieces[(i+j)%n]
                 if p.switch:
                     self.next_switch_piece = p
+                    self.next_switch_idx = switch_idx
                     switch_idx = (i+j)%n
                     break
             #print("Next switch: %d" % (switch_idx,))
@@ -281,14 +288,20 @@ class FooBot(object):
                     else: 
                         #print("Left at %d" % ((switch_idx+j)%n,))
                         left_turns += 1
-            if right_turns > left_turns:
+            if right_turns > left_turns and own_pos.start_lane_idx > 0:
                 #print("switch right")
+                self.next_lane = own_pos.start_lane_idx - 1
+                print("next lane: ", self.next_lane)
                 self.switch("Right")
                 return
-            if left_turns > right_turns:
+            if left_turns > right_turns and own_pos.start_lane_idx < len(self.track.lanes):
                 #print("switch left")
+                self.next_lane = own_pos.start_lane_idx + 1
+                print("next lane: ", self.next_lane)
                 self.switch("Left")
                 return
+            self.next_lane = own_pos.start_lane_idx
+            print("next lane: ", self.next_lane)
 
         # some crude throttle control with magic numbers
         if v == 0:
@@ -318,12 +331,17 @@ class FooBot(object):
                 distance_to_turn = own_pos.piece.length() - own_pos.piece_dist
                 i = own_pos.piece_idx + 1
                 n = len(self.track.pieces)
+                switch_before_corner = False
                 while not self.track.pieces[i % n].turn:
                     i += 1
+                    if (i % n) == self.next_switch_idx:
+                        switch_before_corner = True
                     distance_to_turn += self.track.pieces[i % n].length()
                 corner = self.track.pieces[i % n]
+                
+                corner_lane = own_pos.end_lane_idx if switch_before_corner else self.next_lane
+                corner_entry_speed = traction_loss_threshold(self.corner_radius(corner, corner_lane))
 
-                corner_entry_speed = traction_loss_threshold(self.corner_radius(corner, own_pos.end_lane_idx))
                 braking_distance = distance_to_target_speed(v, corner_entry_speed)
                 print("Turn in %.2f units, braking distance %.2f" % (distance_to_turn, braking_distance))
                 if braking_distance >= distance_to_turn:
@@ -354,8 +372,6 @@ class FooBot(object):
             msg_type, data = msg['msgType'], msg['data']
             if msg_type in msg_map:
                 msg_map[msg_type](data)
-                if msg_type == 'gameEnd':
-                    break
             else:
                 print("Got {0}".format(msg_type))
                 self.ping()
