@@ -22,13 +22,15 @@ def traction_loss_threshold(radius):
 
 class Session:
     def __init__(self, json):
-        self.laps = json['laps']
-        self.cutoff = json['maxLapTimeMs']
-        self.is_quick = json['quickRace']
+        self.laps = json['laps'] if 'laps' in json else None
+        self.cutoff = json['maxLapTimeMs'] if 'maxLapTimeMs' in json else None
+        self.is_quick = json['quickRace'] if 'quickRace' in json else None
+        self.json = json
 
     def __repr__(self):
-        t = "Quick race" if self.is_quick else "Session"
-        return "%s of %d laps, with %d ms cutoff" % (t, self.laps, self.cutoff)
+        return self.json.__repr__()
+        #t = "Quick race" if self.is_quick else "Session"
+        #return "%s of %d laps, with %d ms cutoff" % (t, self.laps, self.cutoff)
 
 class Lane:
     def __init__(self, json):
