@@ -14,6 +14,14 @@ TRACTION_EST = 0.321
 DRIFT_DECAY_RATE_EST = 0.2
 LOG = True
 
+START_DUMP = False
+STRAIGHT_CALIBRATION = False
+C = 0
+K = 0
+X_START = 0
+TIME_START = 0
+TIME = 0
+
 def log(s):
     if LOG: print(s)
 
@@ -49,6 +57,9 @@ class Lane:
         return "Lane %d, offset %d" % (self.index, self.offset)
 
 class Piece:
+    entry_speed_modifier = 1
+    max_abs_theta = 0
+
     def __init__(self, json, lanes):
         if 'angle' in json:
             self.turn = True
@@ -66,7 +77,6 @@ class Piece:
             return self.const_length
         else:
             return self.lengths[lane]
-
 
     def __repr__(self):
         s = " with switch" if self.switch else ""
@@ -92,6 +102,7 @@ class Position:
     def __init__(self, track, json):
         self.angle = json['angle']
         piece_pos = json['piecePosition']
+        self.lap = piece_pos['lap']
         self.piece_idx = piece_pos['pieceIndex']
         self.piece = track.pieces[self.piece_idx]
         self.piece_dist = piece_pos['inPieceDistance']
@@ -102,6 +113,9 @@ class Position:
         return "%d/%d on piece %d, (%d-%d), at angle %.2f" % (self.piece_dist, self.piece.length(self.start_lane_idx), self.piece_idx, self.start_lane_idx, self.end_lane_idx, self.angle)
 
 class FooBot(object):
+    x, v, dv, t, dt, ddt = 0, 0, 0, 0, 0, 0
+    xs, dxs, vs, ts, dts, ddts = [0], [0], [0], [0], [0], [0]
+
     def __init__(self, socket, name, key):
         self.socket = socket
         self.name = name
@@ -111,12 +125,10 @@ class FooBot(object):
         self.next_switch_idx = -1
         self.next_lane = -1
         self.positions = []
-        self.vs = [0]
-        self.ts = [0]
-        self.dts = [0]
-        self.ddts = [0]
         self.can_turbo = False
         self.turbo_piece_index = -1
+        self.pos = None
+        self.last_pos = None
 
     def msg(self, msg_type, data):
         self.send(json.dumps({"msgType": msg_type, "data": data}))
@@ -156,20 +168,6 @@ class FooBot(object):
         log('.. ping ..')
         self.msg("ping", {})
 
-    def on_turbo_enable(self, data):
-        log("--------- turbo available ---------")
-        self.can_turbo = True
-        self.ping()
-
-    def on_join(self, data):
-        log("Joined")
-        self.ping()
-
-    def on_car_id(self, data):
-        color = data['color']
-        log("Identified as " + color)
-        self.color = color
-
     def on_game_init(self, data):
         race = data['race']
         self.track = Track(race['track'])
@@ -178,6 +176,8 @@ class FooBot(object):
         log(self.track)
         log(self.session)
         self.cars = race['cars']
+        self.guide_flag_pos = self.cars[0]['dimensions']['guideFlagPosition']
+        self.length = self.cars[0]['dimensions']['length']
 
         # find start of longest straight for turbo action
         n = len(self.track.pieces)
@@ -193,38 +193,6 @@ class FooBot(object):
                     turbo_spot = (i + 1) % n
         self.turbo_piece_index = turbo_spot
 
-    def on_game_start(self, data):
-        log("Race started")
-        self.ping()
-
-    def on_crash(self, data):
-        if data['color'] == self.color:
-            log("I crashed")
-        else:
-            log("Someone crashed")
-        self.ping()
-
-    def on_spawn(self, data):
-        if data['color'] == self.color:
-            log("I spawned")
-        else:
-            log("Someone spawned")
-        self.ping()
-
-    def on_game_end(self, data):
-        log("Race ended")
-        self.ping()
-
-    def on_error(self, data):
-        log("Error: {0}".format(data))
-        self.ping()
-
-    def on_lap_finished(self, data):
-        c = data['car']['color']
-        t = data['lapTime']['millis']
-        log("======= %s: %d ms =======" % (c, t))
-        self.ping()
-
     def corner_radius(self, piece, lane):
         turn_radius = 0 if not piece.turn else piece.radius
         if turn_radius > 0:
@@ -234,83 +202,50 @@ class FooBot(object):
                 turn_radius += self.track.lanes[lane].offset
         return turn_radius
 
-    def on_car_positions(self, data):
+    def update(self, data):
         cars = dict()
         for json in data:
             cars[json['id']['color']] = Position(self.track, json)
         
-        own_pos = cars[self.color]
-        last_pos = None
+        self.pos = cars[self.color]
+        self.last_pos = None
 
-        v, dt = 0, 0
-        t = own_pos.angle
-        
+        self.t = self.pos.angle
+        self.x = math.sin(self.t / 180.0 * math.pi) * (self.length - self.guide_flag_pos)
+        self.dx = self.x - self.xs[-1]
+
         if len(self.positions) > 0:
-            last_pos = self.positions[-1]
-            dt = t - last_pos.angle
-            if last_pos.piece == own_pos.piece:
-                v = own_pos.piece_dist - last_pos.piece_dist
+            self.last_pos = self.positions[-1]
+            self.dt = self.t - self.last_pos.angle
+            if self.last_pos.piece_idx == self.pos.piece_idx:
+                self.v = self.pos.piece_dist - self.last_pos.piece_dist
             else:
-                start_idx = last_pos.start_lane_idx
-                end_idx = last_pos.end_lane_idx
+                start_idx = self.last_pos.start_lane_idx
+                end_idx = self.last_pos.end_lane_idx
                 # lets not try figure out lane change track lengths...
                 if start_idx != end_idx:
-                    v = self.vs[-1]
+                    self.v = self.vs[-1]
                 else:
-                    v = last_pos.piece.length(start_idx) - last_pos.piece_dist + own_pos.piece_dist
+                    self.v = self.last_pos.piece.length(start_idx) - self.last_pos.piece_dist + self.pos.piece_dist
 
-        dv = v - self.vs[-1]
-        ddt = dt - self.dts[-1]
-        self.positions.append(own_pos)
-        self.vs.append(v)
-        self.ts.append(t)
-        self.dts.append(dt)
-        self.ddts.append(dt)
-        self.ticks += 1
+        self.dv = self.v - self.vs[-1]
+        self.ddt = self.dt - self.dts[-1]
 
-        turn_radius = self.corner_radius(own_pos.piece, own_pos.end_lane_idx)
-        if self.ticks % 10 == 5 or True:
-            log(own_pos)
-            drift_log = "v = %.2f, t = %.2f, dt = %.2f, ddt = %.2f, r = %d" % (v, t, dt, ddt, turn_radius)
-            log(drift_log)
-        """
-        # drift test
-        if own_pos.piece.turn:
-            print("v %d,%.2f" % (self.ticks, v))
-            print("t %d,%.2f" % (self.ticks, t))
-            print("dt %d,%.2f" % (self.ticks, dt))
-            print("ddt %d,%.2f" % (self.ticks, ddt))
+        log("lap %d piece %d, %d/%d, v = %.2f, dv = %.2f, t = %.2f, dt= %.2f" % \
+            (self.pos.lap, self.pos.piece_idx, self.pos.piece_dist, \
+             self.pos.piece.length(self.pos.start_lane_idx), \
+             self.v, self.dv, self.t, self.dt))
 
-        target_speed = 7.5
-
-        if v + dv < target_speed:
-            self.throttle(1)
-        else:
-            self.throttle(target_speed / 10)
-        if own_pos.piece_idx == 8:
-            exit(1)
-        return
-
-        #print("v-t %.2f,%.2f" % (v, t))
-        #print("v-dt %.2f,%.2f" % (v, dt))
-        #print("v-ddt %.2f,%.2f" % (v, ddt))
-        #return
-
-        if not own_pos.piece.turn and (dt != 0 or ddt != 0):
-            log("# %.2f %.2f" % (abs(dt), abs(ddt)))
-        """
-
-        # tur-bo
-        if own_pos.piece_idx == self.turbo_piece_index and self.can_turbo:
+    def turbo_logic(self):
+        if self.pos.piece_idx == self.turbo_piece_index and self.can_turbo:
             self.can_turbo = False
             self.activate_turbo()
-            return
+            return True
+        return False
 
-        # logic for switching to the shortest lane
-
-        if self.next_switch_piece in [None, own_pos.piece] and own_pos.piece_dist > (own_pos.piece.length() / 2):
-
-            i = own_pos.piece_idx
+    def switch_logic(self):
+        if self.next_switch_piece in [None, self.pos.piece] and self.pos.piece_dist > (self.pos.piece.length() / 2):
+            i = self.pos.piece_idx
             n = len(self.track.pieces)
             
             switch_idx = None
@@ -335,74 +270,105 @@ class FooBot(object):
                     else: 
                         #print("Left at %d" % ((switch_idx+j)%n,))
                         left_turns += 1
-            own_lane = own_pos.end_lane_idx
+            own_lane = self.pos.end_lane_idx
             if right_turns > left_turns and own_lane < len(self.track.lanes) - 1:
                 self.next_lane = own_lane + 1
                 log("switch right at piece %d, next lane: %d" % (switch_idx, self.next_lane))
                 self.switch("Right")
-                return
+                return True
             if left_turns > right_turns and own_lane > 0:
                 self.next_lane = own_lane - 1
                 log("switch left at piece %d, next lane: %d" % (switch_idx, self.next_lane))
                 self.switch("Left")
-                return
+                return True
             self.next_lane = own_lane
             log("keep lane %d at piece %d" % (self.next_lane, switch_idx))
+        return False
 
-        # some crude throttle control with magic numbers
-        if v == 0:
+    def speed_logic(self):
+        lane = self.pos.end_lane_idx
+        distance_to_next = self.pos.piece.length(lane) - self.pos.piece_dist
+
+        i = self.pos.piece_idx + 1
+        n = len(self.track.pieces)
+
+        for o in range(1,10):
+            i = (self.pos.piece_idx + o) % n
+            pc = self.track.pieces[i]
+            if pc.turn:
+                corner_entry_speed = traction_loss_threshold(self.corner_radius(pc, lane))
+                braking_distance = distance_to_target_speed(self.v + self.dv, \
+                    corner_entry_speed * pc.entry_speed_modifier)
+                if braking_distance >= distance_to_next:
+                    log("Turn in %.2f units, braking distance %.2f" % (distance_to_next, braking_distance))
+                    self.throttle(0)
+                    return True
+                distance_to_next += pc.length(lane)
+            if pc.switch:
+                lane = self.next_lane
+
+        if not self.pos.piece.turn:
             self.throttle(1)
-        else:
-            if own_pos.piece.turn:
-                length_of_corner = own_pos.piece.length(own_pos.start_lane_idx) - own_pos.piece_dist
-                i = own_pos.piece_idx + 1
-                n = len(self.track.pieces)
-                while self.track.pieces[i % n].turn:
-                    i += 1
-                    length_of_corner += self.track.pieces[i % n].length(own_pos.start_lane_idx)
-                ticks_of_corner = length_of_corner / v
-                drift_estimate = ticks_of_corner * (dt + ddt) + t
-                tmp = dt + ddt
+            return True
 
-                while abs(tmp) > 0.2:
-                    tmp *= (1 - DRIFT_DECAY_RATE_EST)
-                    drift_estimate += tmp
+        return False
 
-                corner = own_pos.piece            
-                corner_lane = own_pos.end_lane_idx
-                safe_speed = traction_loss_threshold(self.corner_radius(corner, corner_lane))
 
-                log("Turn of %.2f units, drift forecast %.2f" % (length_of_corner, drift_estimate))
-                if abs(drift_estimate) >= MAX_DRIFT_ANGLE:
-                    self.throttle(0)
-                elif abs(drift_estimate) >= MAX_DRIFT_ANGLE * 0.9:
-                    self.throttle(safe_speed / 10.0)
-                else:
-                    self.throttle(1)
+    def drift_logic(self):
+        if self.pos.piece.turn:
+            length_of_corner = self.pos.piece.length(self.pos.start_lane_idx) - self.pos.piece_dist
+            i = self.pos.piece_idx + 1
+            n = len(self.track.pieces)
+            while self.track.pieces[i % n].turn:
+                i += 1
+                length_of_corner += self.track.pieces[i % n].length(self.pos.start_lane_idx)
+            ticks_of_corner = length_of_corner / self.v
+            drift_estimate = ticks_of_corner * (self.dt + self.ddt) + self.t
+            tmp = self.dt + self.ddt
+
+            while abs(tmp) > 0.2:
+                tmp *= (1 - DRIFT_DECAY_RATE_EST)
+                drift_estimate += tmp
+
+            corner = self.pos.piece            
+            corner_lane = self.pos.end_lane_idx
+            safe_speed = traction_loss_threshold(self.corner_radius(corner, corner_lane)) * corner.entry_speed_modifier
+
+            log("Turn of %.2f units, drift forecast %.2f" % (length_of_corner, drift_estimate))
+            if abs(drift_estimate) >= MAX_DRIFT_ANGLE:
+                self.throttle(0)
+                return True
+            elif abs(drift_estimate) >= MAX_DRIFT_ANGLE * 0.8:
+                self.throttle(safe_speed / 10.0)
+                return True
             else:
-                distance_to_turn = own_pos.piece.length() - own_pos.piece_dist
-                i = own_pos.piece_idx + 1
-                n = len(self.track.pieces)
-                switch_before_corner = False
-                while not self.track.pieces[i % n].turn:
-                    i += 1
-                    if (i % n) == self.next_switch_idx:
-                        switch_before_corner = True
-                    distance_to_turn += self.track.pieces[i % n].length()
+                self.throttle(1)
+                return True
+        return False
 
-                corner = self.track.pieces[i % n]              
-                corner_lane = own_pos.end_lane_idx if switch_before_corner else self.next_lane
+    def on_car_positions(self, data):
+        self.update(data)
 
-                corner_entry_speed = traction_loss_threshold(self.corner_radius(corner, corner_lane))
-                if (corner.angle > 0 and own_pos.angle < 0) or (corner.angle < 0 and own_pos.angle > 0):
-                    corner_entry_speed *= 1.1 
+        if self.turbo_logic(): 
+            pass
+        elif self.switch_logic(): 
+            pass
+        elif self.v == 0:
+            self.throttle(1)
+        elif self.speed_logic():
+            pass
+        elif self.drift_logic():
+            pass
+        else: 
+            self.ping() 
 
-                braking_distance = distance_to_target_speed(v + dv, corner_entry_speed)
-                log("Turn in %.2f units, braking distance %.2f" % (distance_to_turn, braking_distance))
-                if braking_distance >= distance_to_turn:
-                    self.throttle(0)
-                else:
-                    self.throttle(1)
+        self.pos.piece.max_abs_theta = max(abs(self.t), self.pos.piece.max_abs_theta)
+        self.positions.append(self.pos)
+        self.vs.append(self.v)
+        self.xs.append(self.x)
+        self.dxs.append(self.dx)
+        self.ts.append(self.t)
+        self.ticks += 1
 
     def msg_loop(self):
         msg_map = {
@@ -441,6 +407,64 @@ class FooBot(object):
         print("max", max(times))
         print("avg", sum(times) / len(times))
 
+    def on_game_start(self, data):
+        log("Race started")
+        self.ping()
+
+    def on_crash(self, data):
+        if data['color'] == self.color:
+            log("I crashed")
+        else:
+            log("Someone crashed")
+        self.ping()
+
+    def on_spawn(self, data):
+        if data['color'] == self.color:
+            log("I spawned")
+        else:
+            log("Someone spawned")
+        self.ping()
+
+    def on_game_end(self, data):
+        log("Race ended")
+        self.ping()
+
+    def on_error(self, data):
+        log("Error: {0}".format(data))
+        self.ping()
+
+    def on_lap_finished(self, data):
+        c = data['car']['color']
+        t = data['lapTime']['millis']
+        log("======= %s: %d ms =======" % (c, t))
+
+        if c == self.color:
+            n = len(self.track.pieces)           
+            for i in range(n):
+                safe = True
+                for l in range(3):
+                    lookahead_pc = self.track.pieces[(i + l) % n]
+                    if lookahead_pc.max_abs_theta > MAX_DRIFT_ANGLE * 0.7:
+                        safe = False
+                if safe:
+                    log("increase modifier for piece %d" % (i,))
+                    self.track.pieces[i].entry_speed_modifier *= 1.15
+
+        self.ping()
+
+    def on_turbo_enable(self, data):
+        log("--------- turbo available ---------")
+        self.can_turbo = True
+        self.ping()
+
+    def on_join(self, data):
+        log("Joined")
+        self.ping()
+
+    def on_car_id(self, data):
+        color = data['color']
+        log("Identified as " + color)
+        self.color = color
 
 if __name__ == "__main__":
     if len(sys.argv) == 6:
