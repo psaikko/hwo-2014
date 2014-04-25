@@ -115,6 +115,7 @@ class Position:
 class FooBot(object):
     x, v, dv, t, dt, ddt = 0, 0, 0, 0, 0, 0
     xs, dxs, vs, ts, dts, ddts = [0], [0], [0], [0], [0], [0]
+    crashed = False
 
     def __init__(self, socket, name, key):
         self.socket = socket
@@ -349,6 +350,7 @@ class FooBot(object):
     def on_car_positions(self, data):
         self.update(data)
 
+
         if self.turbo_logic(): 
             pass
         elif self.switch_logic(): 
@@ -414,6 +416,7 @@ class FooBot(object):
     def on_crash(self, data):
         if data['color'] == self.color:
             log("I crashed")
+            self.crashed = True
         else:
             log("Someone crashed")
         self.ping()
@@ -421,6 +424,7 @@ class FooBot(object):
     def on_spawn(self, data):
         if data['color'] == self.color:
             log("I spawned")
+            self.crashed = False
         else:
             log("Someone spawned")
         self.ping()
@@ -442,13 +446,13 @@ class FooBot(object):
             n = len(self.track.pieces)           
             for i in range(n):
                 safe = True
-                for l in range(3):
+                for l in range(5):
                     lookahead_pc = self.track.pieces[(i + l) % n]
-                    if lookahead_pc.max_abs_theta > MAX_DRIFT_ANGLE * 0.7:
+                    if lookahead_pc.max_abs_theta > MAX_DRIFT_ANGLE * 0.8:
                         safe = False
                 if safe:
                     log("increase modifier for piece %d" % (i,))
-                    self.track.pieces[i].entry_speed_modifier *= 1.15
+                    self.track.pieces[i].entry_speed_modifier *= 1.05
 
         self.ping()
 
