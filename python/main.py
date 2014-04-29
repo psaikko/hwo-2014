@@ -14,7 +14,7 @@ DECELERATION_RATE = 0.02
 TRACTION_CALIBRATED = False
 TRACTION_EST = 0.321
 CALIBRATION_THROTTLE = 0.2
-
+CORNER_MODIFIERS = None
 
 DRIFT_DECAY_RATE_EST = 0.2
 LOG = True
@@ -57,7 +57,6 @@ class Lane:
         return "Lane %d, offset %d" % (self.index, self.offset)
 
 class Piece:
-    speed_modifier = 1
     max_abs_theta = 0
 
     def __init__(self, json, lanes):
@@ -170,6 +169,7 @@ class FooBot(object):
         self.msg("ping", {})
 
     def on_game_init(self, data):
+        global CORNER_MODIFIERS
         race = data['race']
         self.track = Track(race['track'])
         log(race['raceSession'])
@@ -193,6 +193,9 @@ class FooBot(object):
                     max_straight_length = j
                     turbo_spot = (i + 1) % n
         self.turbo_piece_index = turbo_spot
+
+        if CORNER_MODIFIERS == None or len(CORNER_MODIFIERS) != len(self.track.pieces):
+            CORNER_MODIFIERS = [1]*len(self.track.pieces)
 
     def corner_radius(self, piece, lane):
         turn_radius = 0 if not piece.turn else piece.radius
@@ -325,6 +328,7 @@ class FooBot(object):
         return False
 
     def speed_logic(self):
+        global CORNER_MODIFIERS
         lane = self.pos.end_lane_idx
         distance_to_next = self.pos.piece.length(lane) - self.pos.piece_dist
 
@@ -337,7 +341,7 @@ class FooBot(object):
             pc = self.track.pieces[i]
             pc_radius = pc.radius if pc.turn else float('inf')
             if pc.turn:
-                corner_entry_speed = traction_loss_threshold(self.corner_radius(pc, lane)) * pc.speed_modifier
+                corner_entry_speed = traction_loss_threshold(self.corner_radius(pc, lane)) * CORNER_MODIFIERS[i]
                 braking_distance = distance_to_target_speed(self.v + self.dv, corner_entry_speed)
                 if braking_distance >= distance_to_next:
                     log("Turn in %.2f units, braking distance %.2f" % (distance_to_next, braking_distance))
@@ -356,10 +360,12 @@ class FooBot(object):
 
 
     def drift_logic(self):
+        global CORNER_MODIFIERS
         if self.pos.piece.turn:
             corner = self.pos.piece            
+            i = self.pos.piece_idx
             corner_lane = self.pos.end_lane_idx
-            target_speed = traction_loss_threshold(self.corner_radius(corner, corner_lane)) * self.pos.piece.speed_modifier
+            target_speed = traction_loss_threshold(self.corner_radius(corner, corner_lane)) * CORNER_MODIFIERS[i]
             self.throttle(min(1, target_speed / 10))
             return True
         return False
@@ -435,11 +441,12 @@ class FooBot(object):
         self.ping()
 
     def on_crash(self, data):
+        global CORNER_MODIFIERS
         if data['color'] == self.color:
             log("I crashed")
             i = self.pos.piece_idx
             for j in range(3):
-                self.track.pieces[i - j].speed_modifier *= 0.9
+                CORNER_MODIFIERS[i - j] *= 0.9
             self.crashed = True
         else:
             log("Someone crashed")
@@ -462,6 +469,7 @@ class FooBot(object):
         self.ping()
 
     def on_lap_finished(self, data):
+        global CORNER_MODIFIERS
         c = data['car']['color']
         t = data['lapTime']['millis']
         log("======= %s: %d ms =======" % (c, t))
@@ -476,10 +484,10 @@ class FooBot(object):
                         lookahead_pc = self.track.pieces[(i + l) % n]
                         current_max = max(abs(lookahead_pc.max_abs_theta), current_max)
                     if current_max < 10:
-                        piece_i.speed_modifier *= 1.1
+                        CORNER_MODIFIERS[i] *= 1.1
                     elif current_max < 0.9 * MAX_DRIFT_ANGLE: # leave 10% margin
-                        piece_i.speed_modifier *= 1 - math.log(current_max / (MAX_DRIFT_ANGLE * 0.9)) / 16
-                    log("modifier for piece %d: %.2fx\tmax theta %.1f" % (i, piece_i.speed_modifier, current_max))
+                        CORNER_MODIFIERS[i] *= 1 - math.log(current_max / (MAX_DRIFT_ANGLE * 0.9)) / 16
+                    log("modifier for piece %d: %.2fx\tmax theta %.1f" % (i, CORNER_MODIFIERS[i], current_max))
 
         self.ping()
 
