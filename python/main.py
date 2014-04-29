@@ -295,14 +295,14 @@ class FooBot(object):
             if self.pos.piece.turn:
                 log("speed %.2f" % (self.v,))
                 if self.t == 0:                
-                    CALIBRATION_THROTTLE = min(CALIBRATION_THROTTLE + 0.005, 1)
+                    CALIBRATION_THROTTLE = 1
                 else:
                     TRACTION_EST = (self.vs[-1]**2) / self.pos.piece.radius * 0.9
                     log("------CALIBRATED------- c = %.2f" % (TRACTION_EST,))
                     TRACTION_CALIBRATED = True
                     return False
                 log("throttle %.2f theta %.4f" % (CALIBRATION_THROTTLE, self.t))
-                self.throttle(min(CALIBRATION_THROTTLE, 1))
+                self.throttle(1)
                 return True
             else:
                 lane = self.pos.end_lane_idx
@@ -336,10 +336,9 @@ class FooBot(object):
             i = (self.pos.piece_idx + o) % n
             pc = self.track.pieces[i]
             pc_radius = pc.radius if pc.turn else float('inf')
-            if pc.turn and abs(pc_radius) < abs(last_radius):
-                corner_entry_speed = traction_loss_threshold(self.corner_radius(pc, lane))
-                braking_distance = distance_to_target_speed(self.v + self.dv, \
-                    corner_entry_speed * pc.speed_modifier)
+            if pc.turn:
+                corner_entry_speed = traction_loss_threshold(self.corner_radius(pc, lane)) * pc.speed_modifier
+                braking_distance = distance_to_target_speed(self.v + self.dv, corner_entry_speed)
                 if braking_distance >= distance_to_next:
                     log("Turn in %.2f units, braking distance %.2f" % (distance_to_next, braking_distance))
                     self.throttle(0)
@@ -438,6 +437,9 @@ class FooBot(object):
     def on_crash(self, data):
         if data['color'] == self.color:
             log("I crashed")
+            i = self.pos.piece_idx
+            for j in range(3):
+                self.track.pieces[i - j].speed_modifier *= 0.9
             self.crashed = True
         else:
             log("Someone crashed")
