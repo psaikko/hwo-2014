@@ -4,10 +4,6 @@ import sys
 import math
 from time import clock
 
-# TODO: learn traction
-# TODO: lane change logic for corner entry speed
-# TODO: calculate straightening rate after corners
-
 MAX_DRIFT_ANGLE = 60
 DECELERATION_RATE = 0.02
 
