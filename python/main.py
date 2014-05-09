@@ -41,8 +41,6 @@ class Session:
 
     def __repr__(self):
         return self.json.__repr__()
-        #t = "Quick race" if self.is_quick else "Session"
-        #return "%s of %d laps, with %d ms cutoff" % (t, self.laps, self.cutoff)
 
 class Lane:
     def __init__(self, json):
@@ -111,6 +109,7 @@ class FooBot(object):
     x, v, dv, t, dt, ddt = 0, 0, 0, 0, 0, 0
     xs, dxs, vs, ts, dts, ddts = [0], [0], [0], [0], [0], [0]
     crashed = False
+    tick = 0
 
     def __init__(self, socket, name, key):
         self.socket = socket
@@ -149,7 +148,11 @@ class FooBot(object):
 
     def throttle(self, throttle):
         x = int(round(throttle / 0.1))
-        vis = "["+ '='*x + ' '*(10-x) +"]"
+        vis = "["+ '='*x + ' '*(10-x) +"]" 
+        vis += " #%5d L%2d P%2d, %d/%d, v: %.2f, dv: %.2f, t: %.2f, dt: %.2f" % \
+            (self.tick, self.pos.lap, self.pos.piece_idx, self.pos.piece_dist, \
+             self.pos.piece.length(self.pos.start_lane_idx), \
+             self.v, self.dv, self.t, self.dt)
         log(vis)
         self.msg("throttle", throttle)
 
@@ -231,11 +234,6 @@ class FooBot(object):
         self.dv = self.v - self.vs[-1]
         self.ddt = self.dt - self.dts[-1]
 
-        log("lap %d piece %d, %d/%d, v = %.2f, dv = %.2f, t = %.2f, dt= %.2f" % \
-            (self.pos.lap, self.pos.piece_idx, self.pos.piece_dist, \
-             self.pos.piece.length(self.pos.start_lane_idx), \
-             self.v, self.dv, self.t, self.dt))
-
     def turbo_logic(self):
         if self.pos.piece_idx == self.turbo_piece_index and self.can_turbo:
             self.can_turbo = False
@@ -315,7 +313,7 @@ class FooBot(object):
                         corner_entry_speed = CALIBRATION_THROTTLE*10
                         braking_distance = distance_to_target_speed(self.v + self.dv, corner_entry_speed)
                         if braking_distance >= distance_to_next:
-                            log("Turn %d in %.2f units, braking distance %.2f" % (i, distance_to_next, braking_distance))
+                            #log("Turn %d in %.2f units, braking distance %.2f" % (i, distance_to_next, braking_distance))
                             self.throttle(0)
                             return True
                     distance_to_next += pc.length(lane)
@@ -340,7 +338,7 @@ class FooBot(object):
                 corner_entry_speed = traction_loss_threshold(self.corner_radius(pc, lane)) * CORNER_MODIFIERS[i]
                 braking_distance = distance_to_target_speed(self.v + self.dv, corner_entry_speed)
                 if braking_distance >= distance_to_next:
-                    log("Turn in %.2f units, braking distance %.2f" % (distance_to_next, braking_distance))
+                    #log("Turn in %.2f units, braking distance %.2f" % (distance_to_next, braking_distance))
                     self.throttle(0)
                     return True
                 distance_to_next += pc.length(lane)
@@ -415,7 +413,10 @@ class FooBot(object):
         times = []
         while line:
             before = clock()
+
             msg = json.loads(line)
+            if "gameTick" in msg:
+                self.tick = msg["gameTick"]
             msg_type, data = msg['msgType'], msg['data']
             if msg_type in msg_map:
                 msg_map[msg_type](data)
@@ -424,6 +425,7 @@ class FooBot(object):
                 self.ping()
             if msg_type == 'tournamentEnd':
                 break
+
             after = clock()
             line = socket_file.readline()
             times.append(after - before)
@@ -470,13 +472,14 @@ class FooBot(object):
         global CORNER_MODIFIERS
         c = data['car']['color']
         t = data['lapTime']['millis']
-        log("======= %s: %d ms =======" % (c, t))
+        log("=============== %s: %d ms ===============" % (c, t))
 
         if c == self.color:
             n = len(self.track.pieces)                 
             for i in range(n):
                 piece_i = self.track.pieces[i]
                 if piece_i.turn: 
+                    old_mod = CORNER_MODIFIERS[i]
                     current_max = 0
                     for l in range(3):
                         lookahead_pc = self.track.pieces[(i + l) % n]
@@ -485,7 +488,8 @@ class FooBot(object):
                         CORNER_MODIFIERS[i] *= 1.1
                     elif current_max < 0.9 * MAX_DRIFT_ANGLE: # leave 10% margin
                         CORNER_MODIFIERS[i] *= 1 - math.log(current_max / (MAX_DRIFT_ANGLE * 0.9)) / 16
-                    log("modifier for piece %d: %.2fx\tmax theta %.1f" % (i, CORNER_MODIFIERS[i], current_max))
+                    log("pc %d: %.2f -> %.2f \tmax theta %.1f" % \
+                              (i, old_mod, CORNER_MODIFIERS[i], current_max))
 
         self.ping()
 
@@ -508,9 +512,9 @@ class FooBot(object):
 
 if __name__ == "__main__":
     if len(sys.argv) == 6:
-        host, port, name, key, track = sys.argv[1:6]
+        host, port, track, name, key = sys.argv[1:6]
         print("Connecting with parameters:")
-        print("host={0}, port={1}, bot name={2}, key={3}, track={4}".format(*sys.argv[1:6]))
+        print("host={0}, port={1}, track{2}, bot name={3}, key={4}".format(*sys.argv[1:6]))
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.connect((host, int(port)))
         bot = FooBot(s, name, key)
