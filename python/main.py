@@ -434,6 +434,8 @@ class FooBot(object):
 
     def on_game_start(self, data):
         log("Race started")
+        self.crashed = False
+        self.can_turbo = False
         self.ping()
 
     def on_crash(self, data):
@@ -488,8 +490,11 @@ class FooBot(object):
         self.ping()
 
     def on_turbo_enable(self, data):
-        log("--------- turbo available ---------")
-        self.can_turbo = True
+        if not self.crashed:
+            log("---------  turbo available  ---------")
+            self.can_turbo = True
+        else:
+            log("--------- cannot into turbo ---------")
         self.ping()
 
     def on_join(self, data):
