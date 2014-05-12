@@ -10,9 +10,9 @@ DECELERATION_RATE = 0.02
 TRACTION_CALIBRATED = False
 TRACTION_EST = 0.321
 CALIBRATION_THROTTLE = 0.2
+
 CORNER_MODIFIERS = None
 
-DRIFT_DECAY_RATE_EST = 0.2
 LOG = True
 
 def sign(x):
@@ -289,36 +289,47 @@ class FooBot(object):
         global CALIBRATION_THROTTLE
 
         if not TRACTION_CALIBRATED:
+            if self.pos.lap > 0:
+                CALIBRATION_THROTTLE = 0.2 + (self.pos.lap * 0.2)
+
+            lane = self.pos.end_lane_idx
+            distance_to_next = self.pos.piece.length(lane) - self.pos.piece_dist
+
+            i = self.pos.piece_idx + 1
+            n = len(self.track.pieces)
+            
+            last_radius = self.pos.piece.radius if self.pos.piece.turn else float('inf')
+
+            for o in range(1,10):
+                i = (self.pos.piece_idx + o) % n
+                pc = self.track.pieces[i]
+                pc_radius = pc.radius if pc.turn else float('inf')
+                # brake for approaching turn or if current turn gets tighter
+                if (not self.pos.piece.turn and pc.turn) or \
+                    (abs(pc_radius) < abs(last_radius)):
+                    corner_entry_speed = CALIBRATION_THROTTLE*10
+                    braking_distance = distance_to_target_speed(self.v + self.dv, corner_entry_speed)
+                    if braking_distance >= distance_to_next:
+                        self.throttle(0)
+                        return True
+
+                distance_to_next += pc.length(lane)
+                if pc.switch:
+                    lane = self.next_lane
+                last_radius = pc_radius   
+
             if self.pos.piece.turn:
                 log("speed %.2f" % (self.v,))
-                if self.t == 0:                
-                    CALIBRATION_THROTTLE = 1
-                else:
-                    TRACTION_EST = (self.vs[-1]**2) / self.pos.piece.radius * 0.9
+                if self.t != 0:
+                    TRACTION_EST = (self.vs[-1]**2) / \
+                        (self.pos.piece.radius + self.track.lanes[lane].offset) # * 0.9
                     log("------CALIBRATED------- c = %.2f" % (TRACTION_EST,))
                     TRACTION_CALIBRATED = True
                     return False
-                log("throttle %.2f theta %.4f" % (CALIBRATION_THROTTLE, self.t))
+                log("throttle %.2f theta %.4f" % (1, self.t))
                 self.throttle(1)
                 return True
-            else:
-                lane = self.pos.end_lane_idx
-                distance_to_next = self.pos.piece.length(lane) - self.pos.piece_dist
-                i = self.pos.piece_idx + 1
-                n = len(self.track.pieces)
-                for o in range(1,10):
-                    i = (self.pos.piece_idx + o) % n
-                    pc = self.track.pieces[i]
-                    if pc.turn:
-                        corner_entry_speed = CALIBRATION_THROTTLE*10
-                        braking_distance = distance_to_target_speed(self.v + self.dv, corner_entry_speed)
-                        if braking_distance >= distance_to_next:
-                            #log("Turn %d in %.2f units, braking distance %.2f" % (i, distance_to_next, braking_distance))
-                            self.throttle(0)
-                            return True
-                    distance_to_next += pc.length(lane)
-                self.throttle(1)
-                return True    
+
         return False
 
     def speed_logic(self):
@@ -341,7 +352,7 @@ class FooBot(object):
                     #log("Turn in %.2f units, braking distance %.2f" % (distance_to_next, braking_distance))
                     self.throttle(0)
                     return True
-                distance_to_next += pc.length(lane)
+            distance_to_next += pc.length(lane)
             if pc.switch:
                 lane = self.next_lane
             last_radius = pc_radius      
@@ -470,21 +481,24 @@ class FooBot(object):
 
     def on_lap_finished(self, data):
         global CORNER_MODIFIERS
+        global TRACTION_CALIBRATED
         c = data['car']['color']
         t = data['lapTime']['millis']
         log("=============== %s: %d ms ===============" % (c, t))
 
-        if c == self.color:
+        if c == self.color and TRACTION_CALIBRATED:
             n = len(self.track.pieces)                 
             for i in range(n):
                 piece_i = self.track.pieces[i]
                 if piece_i.turn: 
                     old_mod = CORNER_MODIFIERS[i]
                     current_max = 0
-                    for l in range(3):
+                    for l in range(5):
                         lookahead_pc = self.track.pieces[(i + l) % n]
                         current_max = max(abs(lookahead_pc.max_abs_theta), current_max)
-                    if current_max < 10:
+                    if current_max < 5:
+                        CORNER_MODIFIERS[i] *= 1.2
+                    elif current_max < 15:
                         CORNER_MODIFIERS[i] *= 1.1
                     elif current_max < 0.9 * MAX_DRIFT_ANGLE: # leave 10% margin
                         CORNER_MODIFIERS[i] *= 1 - math.log(current_max / (MAX_DRIFT_ANGLE * 0.9)) / 16
@@ -514,7 +528,7 @@ if __name__ == "__main__":
     if len(sys.argv) == 6:
         host, port, track, name, key = sys.argv[1:6]
         print("Connecting with parameters:")
-        print("host={0}, port={1}, track{2}, bot name={3}, key={4}".format(*sys.argv[1:6]))
+        print("host={0}, port={1}, track={2}, bot name={3}, key={4}".format(*sys.argv[1:6]))
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.connect((host, int(port)))
         bot = FooBot(s, name, key)
